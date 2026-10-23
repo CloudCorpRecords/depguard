@@ -1,5 +1,5 @@
 /**
- * depguard MCP server. Tools: guard_path, check_package.
+ * depguard MCP server. Tools: guard_path, check_package, check_history.
  * The offline core is the default; registry checks run only when the
  * caller passes online: true.
  */
@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { checkPackage, guardPath, VERSION } from "./core.js";
+import { historyPackage } from "./history.js";
 
 const server = new McpServer({ name: "depguard", version: VERSION });
 
@@ -37,6 +38,15 @@ server.tool(
     content: z.boolean().optional().describe("Also run content mode against the greatest lower published version (default false)"),
   },
   async ({ name, version, online, content }) => text(await checkPackage(name, version, { online: online ?? false, content: content ?? false })),
+);
+
+server.tool(
+  "check_history",
+  "Analyze a package's npm registry publish history for the staged worm pattern (a 0.0.0-stage stub, a decoy release, then a rapid regressed patch holding dist-tags.latest), plus publisher and maintainer changes, repository slug changes, and provenance drops between consecutive versions. Registry metadata only; no tarballs are downloaded.",
+  {
+    name: z.string().describe("Package name, for example lodash or @scope/name"),
+  },
+  async ({ name }) => text(await historyPackage(name)),
 );
 
 const transport = new StdioServerTransport();

@@ -4,6 +4,7 @@
  *
  *   depguard check [path] [--json] [--offline] [--online] [--content] [--base <ref>] [--base-path <dir>]
  *   depguard package <name> [version] [--json] [--online] [--content]
+ *   depguard history <name> [--json]
  *   depguard mcp
  *   depguard --version
  *
@@ -18,6 +19,7 @@
  * FACTORY-NOTES.md (validation problems P-001, P-017, P-021).
  */
 import { checkPackage, guardPath, renderGuardReport, renderPackageReport, VERSION } from "./core.js";
+import { historyPackage, renderHistoryReport } from "./history.js";
 
 function exitBrokenPipe(): never {
   process.exit(141);
@@ -44,6 +46,7 @@ function usage(): never {
   console.error(`Usage:
   depguard check [path] [--json] [--offline] [--online] [--content] [--base <ref>] [--base-path <dir>]
   depguard package <name> [version] [--json] [--online] [--content]
+  depguard history <name> [--json]
   depguard mcp
   depguard --version`);
   process.exit(2);
@@ -92,6 +95,12 @@ async function main(): Promise<void> {
       if (!name) usage();
       const report = await checkPackage(name, version, { online: rest.includes("--online"), content: rest.includes("--content") });
       const text = rest.includes("--json") ? JSON.stringify(report, null, 2) : renderPackageReport(report);
+      await emit(text, report.verdict === "CLEAR" ? 0 : 1);
+    } else if (cmd === "history") {
+      const [name] = positional(rest);
+      if (!name) usage();
+      const report = await historyPackage(name);
+      const text = rest.includes("--json") ? JSON.stringify(report, null, 2) : renderHistoryReport(report);
       await emit(text, report.verdict === "CLEAR" ? 0 : 1);
     } else {
       usage();
