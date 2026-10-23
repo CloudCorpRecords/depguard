@@ -2,8 +2,8 @@
 /**
  * depguard CLI.
  *
- *   depguard check [path] [--json] [--offline] [--online] [--base <ref>] [--base-path <dir>]
- *   depguard package <name> [version] [--json] [--online]
+ *   depguard check [path] [--json] [--offline] [--online] [--content] [--base <ref>] [--base-path <dir>]
+ *   depguard package <name> [version] [--json] [--online] [--content]
  *   depguard mcp
  *   depguard --version
  *
@@ -42,8 +42,8 @@ async function emit(text: string, code: number): Promise<void> {
 
 function usage(): never {
   console.error(`Usage:
-  depguard check [path] [--json] [--offline] [--online] [--base <ref>] [--base-path <dir>]
-  depguard package <name> [version] [--json] [--online]
+  depguard check [path] [--json] [--offline] [--online] [--content] [--base <ref>] [--base-path <dir>]
+  depguard package <name> [version] [--json] [--online] [--content]
   depguard mcp
   depguard --version`);
   process.exit(2);
@@ -81,6 +81,7 @@ async function main(): Promise<void> {
       const online = rest.includes("--online");
       const report = await guardPath(target ?? ".", {
         online,
+        content: rest.includes("--content"),
         baseRef: flagValue(rest, "--base"),
         basePath: flagValue(rest, "--base-path"),
       });
@@ -89,7 +90,7 @@ async function main(): Promise<void> {
     } else if (cmd === "package") {
       const [name, version] = positional(rest);
       if (!name) usage();
-      const report = await checkPackage(name, version, { online: rest.includes("--online") });
+      const report = await checkPackage(name, version, { online: rest.includes("--online"), content: rest.includes("--content") });
       const text = rest.includes("--json") ? JSON.stringify(report, null, 2) : renderPackageReport(report);
       await emit(text, report.verdict === "CLEAR" ? 0 : 1);
     } else {

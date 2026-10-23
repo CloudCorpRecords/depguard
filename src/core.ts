@@ -13,8 +13,9 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import { POPULAR_NAMES } from "./popular.js";
+import type { ContentFetch } from "./content.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 export const MAX_LOCK_ENTRIES = 50_000;
 export const MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"];
@@ -372,6 +373,10 @@ export interface GuardOptions {
   baseRef?: string;
   basePath?: string;
   online?: boolean;
+  /** Content mode (Gap A): fetch both versions' tarballs and diff the install-time surface. Implies network use, like online. */
+  content?: boolean;
+  /** Injectable registry and tarball retrieval for content mode; tests pass recorded fixtures. */
+  contentFetch?: ContentFetch;
   fetchFn?: typeof fetch;
   now?: Date;
 }
@@ -516,6 +521,29 @@ export async function guardPath(targetPath: string, opts: GuardOptions = {}): Pr
     for (const c of changes) c.verdict = verdictOf(c.findings);
   }
 
+  if (opts.content) {
+    const { applyContentChecks } = await import("./content.js");
+    // Snapshot mode only lists deps that already carry findings; a
+    // pinned dep with a prior published version still deserves a
+    // content diff, so stage candidate entries for the rest and drop
+    // the ones the content diff leaves clean.
+    const staged = new Set<string>();
+    if (!base) {
+      const listed = new Set(changes.map((c) => c.name));
+      for (const dep of current.deps.values()) {
+        const lockE = current.lock.get(dep.name);
+        if (!lockE?.version || listed.has(dep.name)) continue;
+        changes.push({ name: dep.name, change: "changed", rangeTo: dep.range, versionTo: lockE.version, verdict: "CLEAR", findings: [] });
+        staged.add(dep.name);
+      }
+    }
+    await applyContentChecks(changes, { fetchFn: opts.fetchFn, contentFetch: opts.contentFetch, warnings });
+    for (let i = changes.length - 1; i >= 0; i--) {
+      if (staged.has(changes[i].name) && changes[i].findings.length === 0) changes.splice(i, 1);
+    }
+    for (const c of changes) c.verdict = verdictOf(c.findings);
+  }
+
   changes.sort((a, b) => a.name.localeCompare(b.name));
   const allFindings = [...changes.flatMap((c) => c.findings), ...repoFindings];
   const verdict = verdictOf(allFindings);
@@ -524,7 +552,7 @@ export async function guardPath(targetPath: string, opts: GuardOptions = {}): Pr
     version: VERSION,
     path: targetPath,
     base: baseLabel,
-    mode: opts.online ? "online" : "offline",
+    mode: opts.online || opts.content ? "online" : "offline",
     verdict,
     counts: {
       added: changes.filter((c) => c.change === "added").length,
@@ -566,11 +594,16 @@ export async function checkPackage(name: string, version: string | undefined, op
   const warnings: string[] = [];
   findings.push(...typosquatFindings(name, [], POPULAR_NAMES));
   if (version && !parseSemver(version)) findings.push({ rule: "VERSION-PATTERN", severity: "low", source: "local", evidence: `version "${version}" is not a plain semver release` });
-  const report: PackageReport = { tool: "depguard", version: VERSION, name, requestedVersion: version ?? null, mode: opts.online ? "online" : "offline", verdict: "CLEAR", findings, warnings };
+  const report: PackageReport = { tool: "depguard", version: VERSION, name, requestedVersion: version ?? null, mode: opts.online || opts.content ? "online" : "offline", verdict: "CLEAR", findings, warnings };
   if (opts.online) {
     const { checkPackageOnline } = await import("./registry.js");
     const extra = await checkPackageOnline(name, version, { fetchFn: opts.fetchFn, now: opts.now, warnings });
     findings.push(...extra);
+  }
+  if (opts.content) {
+    const { contentCheckPackage, defaultContentFetch } = await import("./content.js");
+    const fetcher = opts.contentFetch ?? defaultContentFetch(opts.fetchFn);
+    findings.push(...(await contentCheckPackage(fetcher, name, version, warnings)));
   }
   report.verdict = verdictOf(findings);
   return report;

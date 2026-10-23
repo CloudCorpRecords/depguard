@@ -22,8 +22,9 @@ server.tool(
     base: z.string().optional().describe("Git ref to diff against (for example HEAD~1 or a tag)"),
     base_path: z.string().optional().describe("Directory holding the base manifest set to diff against"),
     online: z.boolean().optional().describe("Also run npm registry checks (default false; the base verdict never needs the network)"),
+    content: z.boolean().optional().describe("Also run content mode: fetch both versions' tarballs and diff the install-time surface statically, nothing installed or executed (default false)"),
   },
-  async ({ path, base, base_path, online }) => text(await guardPath(path, { baseRef: base, basePath: base_path, online: online ?? false })),
+  async ({ path, base, base_path, online, content }) => text(await guardPath(path, { baseRef: base, basePath: base_path, online: online ?? false, content: content ?? false })),
 );
 
 server.tool(
@@ -33,8 +34,9 @@ server.tool(
     name: z.string().describe("Package name, for example lodash or @scope/name"),
     version: z.string().optional().describe("Version to check (default: offline name checks only, or the registry latest when online)"),
     online: z.boolean().optional().describe("Also run npm registry checks (default false)"),
+    content: z.boolean().optional().describe("Also run content mode against the greatest lower published version (default false)"),
   },
-  async ({ name, version, online }) => text(await checkPackage(name, version, { online: online ?? false })),
+  async ({ name, version, online, content }) => text(await checkPackage(name, version, { online: online ?? false, content: content ?? false })),
 );
 
 const transport = new StdioServerTransport();
