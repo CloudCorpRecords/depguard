@@ -15,7 +15,7 @@ import { basename, join } from "node:path";
 import { POPULAR_NAMES } from "./popular.js";
 import type { ContentFetch } from "./content.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 export const MAX_LOCK_ENTRIES = 50_000;
 export const MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"];
@@ -267,24 +267,101 @@ export function parseYarnLock(snap: Snapshot, text: string): void {
   }
 }
 
-/** Best-effort pnpm-lock.yaml parse of the packages: section keys. */
+/**
+ * pnpm-lock.yaml parse covering the shapes a real v9 lockfile uses
+ * (ledger S4-3): quoted scoped keys in packages:/snapshots:
+ * ('@commitlint/cli@21.2.2':), unquoted keys (lodash@4.17.21:), and the
+ * importers: section, where root dependencies are keyed by bare name
+ * ('@commitlint/cli':) with the resolved version on a nested version:
+ * line. The previous key regex required an unquoted name@version at a
+ * shallow indent, so it missed every quoted scoped entry and every
+ * importer entry — the no-base LOCK-MISSING check then condemned
+ * dependencies the diff path resolved fine.
+ */
 export function parsePnpmLock(snap: Snapshot, text: string): void {
   const seen = new Set<string>();
-  const re = /^\s{2,4}\/?((?:@[^/\s]+\/)?[^@\s/]+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const [, name, version] = m;
-    if (seen.has(name)) continue;
+  const add = (name: string, version?: string): void => {
+    if (!name) return;
+    if (seen.has(name)) {
+      // A later sighting may carry the version an earlier one lacked
+      // (importer name first, packages key second, or vice versa).
+      const existing = snap.lock.get(name);
+      if (existing && !existing.version && version) existing.version = version;
+      return;
+    }
     seen.add(name);
-    if (snap.lockEntryCount >= MAX_LOCK_ENTRIES) { snap.lockTruncated = true; break; }
+    if (snap.lockEntryCount >= MAX_LOCK_ENTRIES) { snap.lockTruncated = true; return; }
     snap.lockEntryCount++;
     if (!snap.lock.has(name)) snap.lock.set(name, { name, version, sourceFile: "pnpm-lock.yaml" });
+  };
+  const NOT_DEP_KEYS = new Set([
+    "version", "specifier", "resolution", "engines", "dev", "name",
+    "license", "deprecated", "dependencies", "devDependencies",
+    "peerDependencies", "optionalDependencies", "bundleDependencies",
+    "hasBin", "requiresBuild", "prepare", "cpu", "os", "libc",
+  ]);
+  const semverPrefix = (v: string): string | undefined => {
+    const m = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(v.trim().replace(/^['"]|['"]$/g, ""));
+    return m ? m[1] : undefined;
+  };
+  let section = "";
+  let importerDep: string | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (snap.lockTruncated) break;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent === 0) {
+      section = trimmed.replace(/:$/, "").replace(/^['"]|['"]$/g, "");
+      importerDep = null;
+      continue;
+    }
+    if (section === "packages" || section === "snapshots") {
+      // Entry keys sit at indent 2, quoted when scoped or suffixed.
+      if (indent === 2) {
+        const km = /^['"]?\/?((?:@[^/'"\s]+\/)?[^@'"\s/]+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(trimmed);
+        if (km) { add(km[1], km[2]); continue; }
+      }
+      // Nested dependency lists (notably under snapshots:) use the
+      // inline form  '@scope/name': 1.2.3  or  name: 1.2.3.
+      const inline = /^['"]?((?:@[^/'"\s]+\/)?[^@'"\s/:]+)['"]?:\s*['"]?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(trimmed);
+      if (inline && indent >= 4 && !NOT_DEP_KEYS.has(inline[1])) { add(inline[1], inline[2]); continue; }
+      continue;
+    }
+    if (section === "importers") {
+      // Importer layout: importer path at indent 2, category
+      // (dependencies / devDependencies / ...) at indent 4, dependency
+      // names at indent 6, specifier:/version: fields at indent 8.
+      const field = /^(version|specifier):\s*(.+)$/.exec(trimmed);
+      if (field && indent >= 8 && importerDep) {
+        if (field[1] === "version") add(importerDep, semverPrefix(field[2]));
+        continue;
+      }
+      if (indent === 6) {
+        const km = /^['"]?((?:@[^/'"\s]+\/)?[^@'"\s/:]+)['"]?:\s*(.*)$/.exec(trimmed);
+        if (km && !NOT_DEP_KEYS.has(km[1])) {
+          importerDep = km[1];
+          add(importerDep, km[2] ? semverPrefix(km[2]) : undefined);
+          continue;
+        }
+      }
+      if (indent <= 4) importerDep = null;
+      continue;
+    }
+    // Any other section: still honour plain name@version keys at
+    // indent 2 (older lockfile layouts keep a top-level packages map
+    // under different headings).
+    if (indent === 2) {
+      const km = /^['"]?\/?((?:@[^/'"\s]+\/)?[^@'"\s/]+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(trimmed);
+      if (km) add(km[1], km[2]);
+    }
   }
   // Resolution URLs in pnpm lockfiles hang off each package entry; a
   // tarball line directly under a package key is rare, so resolved host
   // drift is only partially visible here (documented limit).
   const resRe = /resolution:\s*\{[^}]*tarball:\s*(\S+?)[,}]/g;
   const urls: string[] = [];
+  let m: RegExpExecArray | null;
   while ((m = resRe.exec(text)) !== null) urls.push(m[1]);
   let i = 0;
   for (const name of seen) {
@@ -398,6 +475,20 @@ export async function guardPath(targetPath: string, opts: GuardOptions = {}): Pr
     if (!base) warnings.push(`base ref ${opts.baseRef} yielded no manifests; treated as a first snapshot`);
   }
 
+  // S4-7: an asymmetric base (one side has a lockfile, the other does
+  // not — e.g. --base-path pointing at a bare manifest directory) must
+  // not manufacture dependency "changes" out of lockfile presence
+  // alone: a dep whose range is identical on both sides is not changed
+  // just because only the current side can name a locked version.
+  const baseHasLock = base !== null && base.lockFiles.length > 0;
+  const currentHasLock = current.lockFiles.length > 0;
+  const asymmetricLock = base !== null && baseHasLock !== currentHasLock;
+  if (asymmetricLock) {
+    warnings.push(
+      `asymmetric base: the ${baseHasLock ? "current snapshot" : "base"} has no lockfile while the ${baseHasLock ? "base" : "current snapshot"} has one (${current.lockFiles.join(", ") || base!.lockFiles.join(", ")}); lockfile evidence exists on one side only, so same-range dependencies are not counted as changed`,
+    );
+  }
+
   const changes: Change[] = [];
   const repoFindings: Finding[] = [];
   const popular = POPULAR_NAMES;
@@ -424,6 +515,9 @@ export async function guardPath(targetPath: string, opts: GuardOptions = {}): Pr
       } else if (b && c) {
         const findings: Finding[] = [];
         const rangeChanged = b.range !== c.range;
+        // S4-7: with an asymmetric base, lock presence on one side only
+        // is not evidence of a change for a same-range dependency.
+        if (!rangeChanged && asymmetricLock) continue;
         const versionChanged = (bLock?.version ?? null) !== (cLock?.version ?? null);
         if (!rangeChanged && !versionChanged && (bLock?.resolved ?? null) === (cLock?.resolved ?? null) && (bLock?.integrity ?? null) === (cLock?.integrity ?? null)) continue;
         const fromV = parseSemver(bLock?.version ?? rangeTarget(b.range) ?? undefined);
@@ -488,7 +582,7 @@ export async function guardPath(targetPath: string, opts: GuardOptions = {}): Pr
     if (manifestChanged && !lockChanged && base.lockFiles.length > 0) {
       repoFindings.push({ rule: "LOCKFILE-DRIFT", severity: "medium", source: "local", evidence: "dependency manifests changed but every lockfile entry is identical to the base; the lockfile was not regenerated" });
     }
-    if (!manifestChanged && lockChanged && !changes.some((c) => c.change === "lock-changed")) {
+    if (!manifestChanged && lockChanged && !asymmetricLock && !changes.some((c) => c.change === "lock-changed")) {
       repoFindings.push({ rule: "LOCKFILE-ONLY-DRIFT", severity: "medium", source: "local", evidence: "lockfile entries changed while dependency manifests are identical to the base" });
     }
   } else {

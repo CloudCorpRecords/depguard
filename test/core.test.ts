@@ -201,6 +201,100 @@ describe("lockfile parsers", () => {
   });
 });
 
+describe("S4-3 regression: pnpm lock presence uses importers + packages/snapshots keys", () => {
+  const PNPM_LOCK = [
+    "lockfileVersion: '9.0'",
+    "",
+    "importers:",
+    "",
+    "  .:",
+    "    dependencies:",
+    "      '@commitlint/cli':",
+    "        specifier: ^21.2.2",
+    "        version: 21.2.2",
+    "      lodash:",
+    "        specifier: ^4.17.21",
+    "        version: 4.17.21",
+    "    devDependencies:",
+    "      '@changesets/cli':",
+    "        specifier: ^2.29.7",
+    "        version: 2.29.7",
+    "      importer-only-lib:",
+    "        specifier: catalog:",
+    "        version: 1.5.0",
+    "",
+    "packages:",
+    "",
+    "  '@changesets/cli@2.29.7':",
+    "    resolution: {integrity: sha512-fake}",
+    "",
+    "  '@commitlint/cli@21.2.2':",
+    "    resolution: {integrity: sha512-fake}",
+    "",
+    "  lodash@4.17.21:",
+    "    resolution: {integrity: sha512-fake}",
+    "",
+    "snapshots:",
+    "",
+    "  '@commitlint/cli@21.2.2':",
+    "    dependencies:",
+    "      '@commitlint/types': 21.2.2",
+    "",
+  ].join("\n");
+
+  it("parses quoted scoped keys in packages/snapshots and importer entries", () => {
+    const dir = makeDir("depguard-pnpm9-");
+    writePkg(dir, { name: "fx", dependencies: { "@commitlint/cli": "^21.2.2", "@changesets/cli": "^2.29.7", lodash: "^4.17.21", "importer-only-lib": "catalog:" } });
+    writeFileSync(join(dir, "pnpm-lock.yaml"), PNPM_LOCK);
+    const snap = loadSnapshotFromDir(dir, "t");
+    assert.equal(snap.lock.get("@commitlint/cli")?.version, "21.2.2", JSON.stringify([...snap.lock.keys()]));
+    assert.equal(snap.lock.get("@changesets/cli")?.version, "2.29.7", JSON.stringify([...snap.lock.keys()]));
+    assert.equal(snap.lock.get("lodash")?.version, "4.17.21");
+    assert.ok(snap.lock.has("importer-only-lib"), JSON.stringify([...snap.lock.keys()]));
+  });
+
+  it("no-base check emits no LOCK-MISSING for importer/packages deps, but still flags a genuinely missing dep", async () => {
+    const dir = makeDir("depguard-pnpm9-check-");
+    writePkg(dir, {
+      name: "fx",
+      dependencies: {
+        "@commitlint/cli": "^21.2.2",
+        "@changesets/cli": "^2.29.7",
+        lodash: "^4.17.21",
+        "importer-only-lib": "catalog:",
+        "genuinely-absent-lib": "^3.0.0",
+      },
+    });
+    writeFileSync(join(dir, "pnpm-lock.yaml"), PNPM_LOCK);
+    const r = await guardPath(dir);
+    const missing = r.changes.filter((c) => c.findings.some((f) => f.rule === "LOCK-MISSING")).map((c) => c.name);
+    assert.deepEqual(missing, ["genuinely-absent-lib"], JSON.stringify(r.changes, null, 2));
+  });
+});
+
+describe("S4-7 regression: asymmetric base (base has no lockfile) warns and does not manufacture changes", () => {
+  it("same-range deps are not counted changed when only the current side has a lockfile", async () => {
+    const { base, current } = pair();
+    writePkg(base, { name: "fx", dependencies: { lodash: "^4.17.21", express: "^4.18.2" } });
+    writePkg(current, { name: "fx", dependencies: { lodash: "^4.17.21", express: "^4.18.2" } });
+    writeLock(current, { lodash: lockEntry("4.17.21"), express: lockEntry("4.18.2") });
+    const r = await guardPath(current, { basePath: base });
+    assert.equal(r.counts.changed, 0, JSON.stringify(r.changes, null, 2));
+    assert.ok(!r.changes.some((c) => c.rangeFrom && c.rangeFrom === c.rangeTo), JSON.stringify(r.changes));
+    assert.ok(r.warnings.some((w) => /asymmetric/i.test(w) && /lockfile/i.test(w)), JSON.stringify(r.warnings));
+  });
+
+  it("a real range change still reports under an asymmetric base", async () => {
+    const { base, current } = pair();
+    writePkg(base, { name: "fx", dependencies: { lodash: "^4.17.20" } });
+    writePkg(current, { name: "fx", dependencies: { lodash: "^4.17.21" } });
+    writeLock(current, { lodash: lockEntry("4.17.21") });
+    const r = await guardPath(current, { basePath: base });
+    assert.equal(r.counts.changed, 1, JSON.stringify(r.changes, null, 2));
+    assert.ok(r.warnings.some((w) => /asymmetric/i.test(w)), JSON.stringify(r.warnings));
+  });
+});
+
 describe("scale", () => {
   it("a monorepo-scale lockfile (30k entries) completes with caps reported", async () => {
     const dir = makeDir("depguard-scale-");
