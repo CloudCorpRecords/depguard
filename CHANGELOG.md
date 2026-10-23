@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 - 2026-10-23
+
+- Registry-history mode (Gap B, ledger P-159): a new `depguard history <name>` command (and a `check_history` MCP tool) fetches the packument and analyzes publish history: version timeline and publish gaps, the staged pattern (a 0.0.0-stage or prerelease stub, a decoy-looking release, then a rapid regressed patch holding dist-tags.latest), per-version publisher and maintainer set changes, repository slug changes, and provenance presence changes. New rules: HISTORY-STAGED-PATTERN (high), HISTORY-STAGE-STUB, HISTORY-LATEST-REGRESSION, HISTORY-RAPID-REGRESSION, HISTORY-MAINTAINER-CHANGE, HISTORY-REPO-CHANGE, HISTORY-PROVENANCE-DROP, HISTORY-PACKAGE-NOT-FOUND. Registry metadata only; no tarballs are downloaded. Well-behaved packuments (zod, lodash) draw no high findings.
+- Also includes the S4-3 and S4-7 fix-pass changes that were staged locally as 0.2.1 by a parallel workstream and never published separately: pnpm lock presence now reads importers plus packages/snapshots keys (quoted scoped keys included), and an asymmetric base (only one side has a lockfile) warns instead of manufacturing changes.
+
 ## 0.2.0 - 2026-10-23
 
 - Content-based update vetting (Gap A, ledger P-158): a new `--content` mode for `check` and `package` (and a `content` parameter on both MCP tools) fetches both versions' tarballs from the npm registry and diffs the install-time surface statically: file inventory, package.json install scripts, and install-reachable code (script targets plus relative imports to depth 3), scanning for credential-path strings, network endpoints, added binaries, and obfuscation-shaped code. New rules: CONTENT-INSTALL-SCRIPT-ADDED, CONTENT-INSTALL-SCRIPT-CHANGED, CONTENT-CRED-SIGNAL-ADDED, CONTENT-NETWORK-ENDPOINT-ADDED, CONTENT-BINARY-ADDED, CONTENT-OBFUSCATED-ADDED. Tarballs are extracted in memory only; nothing is installed or executed. Retrieval sits behind an injectable layer, so tests run on recorded fixtures with no network. A benign build postinstall with no credential or network signals does not grade high.

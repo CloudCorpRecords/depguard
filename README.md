@@ -16,6 +16,7 @@ The base verdict is fully offline and deterministic. Registry checks (version ag
 | Manifest dependencies with no lockfile entry (single-snapshot mode) | local | LOCK-MISSING |
 | Version published under 7 days ago; publisher or maintainer change versus the previous version; missing provenance attestation; deprecation marking; version absent from the registry | online only | VERSION-AGE, MAINTAINER-CHANGE, NO-PROVENANCE, DEPRECATED, VERSION-NOT-FOUND |
 | Content diff of the two versions' tarballs: a version bump that adds an install script, or adds credential-path strings, network endpoints, binaries, or obfuscation-shaped code in install-reachable files (the script targets plus their relative imports). A quiet bump that adds a preinstall loading credential paths grades HIGH-RISK and names the added signals; a benign build postinstall with no such signals does not grade high | content mode only (`--content`) | CONTENT-INSTALL-SCRIPT-ADDED, CONTENT-INSTALL-SCRIPT-CHANGED, CONTENT-CRED-SIGNAL-ADDED, CONTENT-NETWORK-ENDPOINT-ADDED, CONTENT-BINARY-ADDED, CONTENT-OBFUSCATED-ADDED |
+| Registry publish history: the staged worm pattern (a 0.0.0-stage stub, a decoy-looking release, then a rapid regressed patch holding dist-tags.latest), stage stubs, latest-version regression, rapid regressed clusters, publisher and maintainer changes, repository slug changes, provenance drops | history mode (`depguard history <name>`) | HISTORY-STAGED-PATTERN, HISTORY-STAGE-STUB, HISTORY-LATEST-REGRESSION, HISTORY-RAPID-REGRESSION, HISTORY-MAINTAINER-CHANGE, HISTORY-REPO-CHANGE, HISTORY-PROVENANCE-DROP, HISTORY-PACKAGE-NOT-FOUND |
 
 Lockfiles: `package-lock.json` is parsed fully (v1 legacy tree and v2/v3 packages map). `yarn.lock` and `pnpm-lock.yaml` are parsed best-effort for resolved entries and versions.
 
@@ -26,8 +27,11 @@ Verdicts: per dependency and overall, `CLEAR` / `REVIEW` / `HIGH-RISK`, with one
 ```bash
 depguard check [path] [--json] [--offline] [--online] [--content] [--base <ref>] [--base-path <dir>]
 depguard package <name> [version] [--json] [--online] [--content]
+depguard history <name> [--json]
 depguard mcp
 ```
+
+`history` (v0.3.0, ledger P-159) analyzes one package's registry publish history for the staged worm pattern and related signals. It reads registry metadata only and downloads no tarballs.
 
 `check` defaults to the offline core against the current directory, as a single snapshot (every manifest dependency graded on what is here now). Pass `--base HEAD~1` (any git ref) or `--base-path <dir>` to diff against a base. `package` grades one name without a repo. There are no timestamps in the JSON report, so identical inputs produce byte-identical output.
 
@@ -39,6 +43,7 @@ One bin serves the CLI and a stdio MCP server (`depguard mcp`). Tools:
 
 - `guard_path(path, base?, base_path?, online?, content?)`: the full diff report as JSON.
 - `check_package(name, version?, online?, content?)`: grade a single package name and version.
+- `check_history(name)`: analyze a package's registry publish history for staged-pattern and related signals.
 
 ## Limits
 
